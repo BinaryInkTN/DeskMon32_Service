@@ -1,0 +1,185 @@
+#include "library.h"
+#include <tchar.h>
+#include <strsafe.h>
+#include <aclapi.h>
+#include <stdio.h>
+#include <windows.h>
+#include "serial.h"
+
+#include "metrics.h"
+
+#define SVC_NAME TEXT("DeskMon32_Service")
+
+static LibContext ctx = {};
+
+// Forward declarations
+VOID WINAPI SvcMain(DWORD dwArgc, LPTSTR *lpszArgv);
+VOID WINAPI SvcCtrlHandler(DWORD dwCtrl);
+VOID ReportSvcStatus(DWORD dwCurrentState, DWORD dwWin32ExitCode, DWORD dwWaitHint);
+VOID SvcReportEvent(LPTSTR szFunction);
+VOID SvcInit(DWORD dwArgc, LPTSTR *lpszArgv);
+DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
+{
+    DeviceMetrics metrics = {0};
+    SerialInit();
+
+    PollDeviceMetrics(&metrics);
+    Sleep(1000);
+
+    CreateDirectory(TEXT("C:\\ProgramData\\DeskMon32_Service"), NULL);
+
+    while (WaitForSingleObject(ctx.ghSvcStopEvent, 1000) == WAIT_TIMEOUT)
+    {
+        PollDeviceMetrics(&metrics);
+        char formatted_data[256];
+        snprintf(formatted_data, sizeof(formatted_data), "CPU = %.2f%%, RAM = %.2f%%\n", metrics.current_cpu_usage, metrics.current_ram_usage);
+        SerialWrite(formatted_data, strlen(formatted_data));
+    }
+
+    return 0;
+}
+
+VOID WINAPI SvcMain(DWORD dwArgc, LPTSTR *lpszArgv)
+{
+    ctx.gSvcStatusHandle = RegisterServiceCtrlHandler(SVC_NAME, SvcCtrlHandler);
+    if (!ctx.gSvcStatusHandle)
+    {
+        SvcReportEvent(TEXT("RegisterServiceCtrlHandler"));
+        return;
+    }
+
+    ctx.gSvcStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    ctx.gSvcStatus.dwServiceSpecificExitCode = 0;
+
+    ReportSvcStatus(SERVICE_START_PENDING, NO_ERROR, 10000);
+
+    SvcInit(dwArgc, lpszArgv);
+}
+
+VOID SvcInit(DWORD dwArgc, LPTSTR *lpszArgv)
+{
+    ctx.ghSvcStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!ctx.ghSvcStopEvent)
+    {
+        ReportSvcStatus(SERVICE_STOPPED, GetLastError(), 0);
+        return;
+    }
+
+    HANDLE hThread = CreateThread(NULL, 0, ServiceWorkerThread, NULL, 0, NULL);
+    if (!hThread)
+    {
+        ReportSvcStatus(SERVICE_STOPPED, GetLastError(), 0);
+        CloseHandle(ctx.ghSvcStopEvent);
+        return;
+    }
+
+    ReportSvcStatus(SERVICE_RUNNING, NO_ERROR, 0);
+
+    WaitForSingleObject(ctx.ghSvcStopEvent, INFINITE);
+
+    WaitForSingleObject(hThread, INFINITE);
+    CloseHandle(hThread);
+    CloseHandle(ctx.ghSvcStopEvent);
+
+    ReportSvcStatus(SERVICE_STOPPED, NO_ERROR, 0);
+}
+
+VOID WINAPI SvcCtrlHandler(DWORD dwCtrl)
+{
+    switch(dwCtrl)
+    {
+        case SERVICE_CONTROL_STOP:
+            ReportSvcStatus(SERVICE_STOP_PENDING, NO_ERROR, 0);
+            SetEvent(ctx.ghSvcStopEvent);
+            break;
+        case SERVICE_CONTROL_INTERROGATE:
+            ReportSvcStatus(ctx.gSvcStatus.dwCurrentState, NO_ERROR, 0);
+            break;
+        default:
+            break;
+    }
+}
+
+VOID ReportSvcStatus(DWORD dwCurrentState, DWORD dwWin32ExitCode, DWORD dwWaitHint)
+{
+    static DWORD dwCheckPoint = 1;
+
+    ctx.gSvcStatus.dwCurrentState = dwCurrentState;
+    ctx.gSvcStatus.dwWin32ExitCode = dwWin32ExitCode;
+    ctx.gSvcStatus.dwWaitHint = dwWaitHint;
+
+    if (dwCurrentState == SERVICE_START_PENDING)
+        ctx.gSvcStatus.dwControlsAccepted = 0;
+    else
+        ctx.gSvcStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
+
+    if (dwCurrentState == SERVICE_RUNNING || dwCurrentState == SERVICE_STOPPED)
+        ctx.gSvcStatus.dwCheckPoint = 0;
+    else
+        ctx.gSvcStatus.dwCheckPoint = dwCheckPoint++;
+
+    SetServiceStatus(ctx.gSvcStatusHandle, &ctx.gSvcStatus);
+}
+
+VOID SvcReportEvent(LPTSTR szFunction)
+{
+    HANDLE hEventSource = RegisterEventSource(NULL, SVC_NAME);
+    if (!hEventSource)
+        return;
+
+    TCHAR Buffer[256];
+    StringCchPrintf(Buffer, 256, TEXT("%s failed with %lu"), szFunction, GetLastError());
+
+    LPCTSTR lpszStrings[2] = { SVC_NAME, Buffer };
+    ReportEvent(hEventSource, EVENTLOG_ERROR_TYPE, 0, 0, NULL, 2, 0, lpszStrings, NULL);
+
+    DeregisterEventSource(hEventSource);
+}
+
+VOID SvcInstall()
+{
+    TCHAR szPath[MAX_PATH];
+    if (!GetModuleFileName(NULL, szPath, MAX_PATH))
+    {
+        printf("Cannot install service (%lu)\n", GetLastError());
+        return;
+    }
+
+    TCHAR szQuotedPath[MAX_PATH];
+    StringCbPrintf(szQuotedPath, MAX_PATH, TEXT("\"%s\""), szPath);
+
+    SC_HANDLE schSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!schSCManager)
+    {
+        printf("OpenSCManager failed (%lu)\n", GetLastError());
+        return;
+    }
+
+    SC_HANDLE schService = CreateService(
+        schSCManager,
+        SVC_NAME,
+        SVC_NAME,
+        SERVICE_ALL_ACCESS,
+        SERVICE_WIN32_OWN_PROCESS,
+        SERVICE_DEMAND_START,
+        SERVICE_ERROR_NORMAL,
+        szQuotedPath,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    if (!schService)
+    {
+        printf("CreateService failed (%lu)\n", GetLastError());
+    }
+    else
+    {
+        printf("Service installed successfully\n");
+        CloseServiceHandle(schService);
+    }
+
+    CloseServiceHandle(schSCManager);
+}
