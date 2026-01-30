@@ -18,8 +18,16 @@ VOID WINAPI SvcCtrlHandler(DWORD dwCtrl);
 VOID ReportSvcStatus(DWORD dwCurrentState, DWORD dwWin32ExitCode, DWORD dwWaitHint);
 VOID SvcReportEvent(LPTSTR szFunction);
 VOID SvcInit(DWORD dwArgc, LPTSTR *lpszArgv);
-DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
-{
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t header[2];
+    float current_cpu_usage;
+    float current_ram_usage;
+    uint32_t timestamp;
+} MetricPacket;
+#pragma pack(pop)
+
+DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
     DeviceMetrics metrics = {0};
     SerialInit();
 
@@ -28,17 +36,24 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
 
     CreateDirectory(TEXT("C:\\ProgramData\\DeskMon32_Service"), NULL);
 
-    while (WaitForSingleObject(ctx.ghSvcStopEvent, 1000) == WAIT_TIMEOUT)
-    {
+    uint32_t start_time = GetTickCount();
+
+    while (WaitForSingleObject(ctx.ghSvcStopEvent, 1000) == WAIT_TIMEOUT) {
         PollDeviceMetrics(&metrics);
-        char formatted_data[256];
-        snprintf(formatted_data, sizeof(formatted_data), "CPU = %.2f%%, RAM = %.2f%%\n", metrics.current_cpu_usage, metrics.current_ram_usage);
-        SerialWrite(formatted_data, strlen(formatted_data));
+
+        MetricPacket packet;
+        packet.header[0] = 0xAA;
+        packet.header[1] = 0x55;
+        packet.current_cpu_usage = (float)metrics.current_cpu_usage;
+        packet.current_ram_usage = (float)metrics.current_ram_usage;
+        packet.timestamp = GetTickCount() - start_time;
+
+        SerialWrite((const char*)&packet, sizeof(MetricPacket));
+
     }
 
     return 0;
 }
-
 VOID WINAPI SvcMain(DWORD dwArgc, LPTSTR *lpszArgv)
 {
     ctx.gSvcStatusHandle = RegisterServiceCtrlHandler(SVC_NAME, SvcCtrlHandler);

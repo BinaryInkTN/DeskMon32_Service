@@ -4,11 +4,8 @@
 
 #include <windows.h>
 #include <stdio.h>
+#include "metrics.h"
 
-typedef struct {
-    double current_cpu_usage;
-    double current_ram_usage;
-} DeviceMetrics;
 
 static ULARGE_INTEGER last_idle = {0}, last_kernel = {0}, last_user = {0};
 
