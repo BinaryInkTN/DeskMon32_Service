@@ -7,6 +7,8 @@
 typedef struct {
     double current_cpu_usage;
     double current_ram_usage;
+    float current_gpu_fan_speed;
+    float current_gpu_utilisation;
 } DeviceMetrics;
 void PollDeviceMetrics(DeviceMetrics *metrics);
 #endif //SERVICE_METRICS_H

@@ -1,0 +1,4 @@
+# ninja log v6
+25	899	7915238516008703	CMakeFiles/service.dir/main.c.obj	b0b7e948b8084d36
+15	911	7915238515906413	CMakeFiles/service.dir/library.c.obj	a1aa6d2f9672ad45
+43	923	7915238516178466	CMakeFiles/service.dir/serial.c.obj	955d0c928f9908c0
