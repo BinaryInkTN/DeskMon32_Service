@@ -12,52 +12,88 @@
 
 static LibContext ctx = {};
 
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t header[2];
+
+    float cpu;
+    float ram;
+
+    float cpu_temp;
+    float cpu_fan;
+
+    float gpu_fan;
+    float gpu_util;
+    float gpu_temp;
+
+    char  drive_letters[MAX_DRIVES];
+    float drive_used[MAX_DRIVES];
+    float drive_total[MAX_DRIVES];
+    float drive_free[MAX_DRIVES];
+
+    uint8_t drive_count;
+    uint32_t timestamp;
+} MetricPacket;
+#pragma pack(pop)
 
 VOID WINAPI SvcMain(DWORD dwArgc, LPTSTR *lpszArgv);
 VOID WINAPI SvcCtrlHandler(DWORD dwCtrl);
 VOID ReportSvcStatus(DWORD dwCurrentState, DWORD dwWin32ExitCode, DWORD dwWaitHint);
 VOID SvcReportEvent(LPTSTR szFunction);
 VOID SvcInit(DWORD dwArgc, LPTSTR *lpszArgv);
-#pragma pack(push, 1)
-typedef struct {
-    uint8_t header[2];
-    float current_cpu_usage;
-    float current_ram_usage;
-    float current_gpu_fan_speed;
-    float current_gpu_utilisation;
-    uint32_t timestamp;
-} MetricPacket;
-#pragma pack(pop)
+DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
+{
+    DeviceMetrics metrics;
+    ZeroMemory(&metrics, sizeof(metrics));
 
-DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
-    DeviceMetrics metrics = {0};
     SerialInit();
 
     PollDeviceMetrics(&metrics);
     Sleep(1000);
 
-    CreateDirectory(TEXT("C:\\ProgramData\\DeskMon32_Service"), NULL);
+    const uint32_t start_time = GetTickCount();
 
-    uint32_t start_time = GetTickCount();
-
-    while (WaitForSingleObject(ctx.ghSvcStopEvent, 1000) == WAIT_TIMEOUT) {
+    while (WaitForSingleObject(ctx.ghSvcStopEvent, 1000) == WAIT_TIMEOUT)
+    {
         PollDeviceMetrics(&metrics);
 
         MetricPacket packet;
+        ZeroMemory(&packet, sizeof(packet));
+
         packet.header[0] = 0xAA;
         packet.header[1] = 0x55;
-        packet.current_cpu_usage = (float)metrics.current_cpu_usage;
-        packet.current_ram_usage = (float)metrics.current_ram_usage;
-        packet.current_gpu_fan_speed = (float) metrics.current_gpu_fan_speed;
-        packet.current_gpu_utilisation = (float) metrics.current_gpu_utilisation;
+
+        packet.cpu      = (float)metrics.current_cpu_usage;
+        packet.ram      = (float)metrics.current_ram_usage;
+
+        packet.cpu_temp = metrics.current_cpu_temperature;
+        packet.cpu_fan  = metrics.current_cpu_fan_speed;
+
+        packet.gpu_fan  = metrics.current_gpu_fan_speed;
+        packet.gpu_util = metrics.current_gpu_utilisation;
+        packet.gpu_temp = metrics.current_gpu_temperature;
+
         packet.timestamp = GetTickCount() - start_time;
 
-        SerialWrite((const char*)&packet, sizeof(MetricPacket));
+        packet.drive_count = metrics.drive_count;
+        if (packet.drive_count > MAX_DRIVES)
+            packet.drive_count = MAX_DRIVES;
 
+        for (int i = 0; i < packet.drive_count; ++i)
+        {
+            packet.drive_letters[i] = metrics.drive_letters[i];
+            packet.drive_used[i]    = (float)metrics.drive_used_percent[i];
+            packet.drive_total[i]   = (float)metrics.drive_total_gb[i];
+            packet.drive_free[i]    = (float)metrics.drive_free_gb[i];
+        }
+
+        SerialWrite((const char*)&packet, sizeof(packet));
     }
 
     return 0;
 }
+
+
 VOID WINAPI SvcMain(DWORD dwArgc, LPTSTR *lpszArgv)
 {
     ctx.gSvcStatusHandle = RegisterServiceCtrlHandler(SVC_NAME, SvcCtrlHandler);
